@@ -2,7 +2,7 @@
 # { "Depends": "py-genlayer:1jb45aa8ynh2a9c9xn3b7qqh8sm5q93hwfp7jqmwsfhh8jpz09h6" }
 from genlayer import *
 
-class Contract(gl.Contract):
+class GenClaim(gl.Contract):
     # Storage structures using GenVM's TreeMap with sized integer u256
     policies: TreeMap[str, u256]
     insured_users: TreeMap[Address, u256]
