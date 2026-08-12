@@ -124,8 +124,11 @@ function App() {
     setTxHash("");
 
     try {
-      const client = getWriteClient();
-      await client.connect("studionet");
+      try {
+        await client.connect("studionet");
+      } catch (connErr) {
+        console.warn("Snap connect bypassed:", connErr);
+      }
 
       const premiumValue = parseInt(buyPremium, 10);
       
@@ -199,8 +202,11 @@ function App() {
 
     try {
       setStatusMessage("Triggering AI Claim Adjudication...");
-      const client = getWriteClient();
-      await client.connect("studionet");
+      try {
+        await client.connect("studionet");
+      } catch (connErr) {
+        console.warn("Snap connect bypassed:", connErr);
+      }
 
       const hash = await client.writeContract({
         address: CONTRACT_ADDRESS,
