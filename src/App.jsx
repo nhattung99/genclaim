@@ -69,6 +69,27 @@ function App() {
         method: "eth_requestAccounts",
       });
       setAccount(accounts[0]);
+
+      // Switch sang studionet (chainId 61999 = 0xF21F)
+      try {
+        await window.ethereum.request({
+          method: 'wallet_switchEthereumChain',
+          params: [{ chainId: '0xF21F' }],
+        });
+      } catch (switchError) {
+        if (switchError.code === 4902) {
+          await window.ethereum.request({
+            method: 'wallet_addEthereumChain',
+            params: [{
+              chainId: '0xF21F',
+              chainName: 'GenLayer Studionet',
+              rpcUrls: ['https://studio.genlayer.com/api'],
+              nativeCurrency: { name: 'GEN', symbol: 'GEN', decimals: 18 },
+            }],
+          });
+        }
+      }
+
       setStatusMessage("Wallet connected successfully!");
     } catch (error) {
       console.error(error);
@@ -494,7 +515,15 @@ function App() {
           <p>{statusMessage}</p>
           {txHash && (
             <div className="tx-link">
-              <span>Tx Hash:</span> <code>{txHash}</code>
+              <span>View on Explorer:</span>
+              <a
+                href={`https://explorer-studio.genlayer.com/tx/${txHash}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{ color: 'var(--accent-cyan)', wordBreak: 'break-all' }}
+              >
+                {txHash.substring(0, 16)}...{txHash.substring(txHash.length - 8)}
+              </a>
             </div>
           )}
         </div>

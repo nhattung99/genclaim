@@ -1,0 +1,6 @@
+{
+  "network": "studionet",
+  "contracts": {
+    "GenClaim": "0x17f66D5426f3CeEcB664504d3dCbF773B528FDD7"
+  }
+}

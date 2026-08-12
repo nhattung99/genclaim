@@ -41,8 +41,13 @@ class GenClaim(gl.Contract):
 
         # Define non-deterministic leader function
         def leader_fn():
-            # 1. Fetch flight data as raw text
-            web_data = gl.nondet.web.render(flight_radar_url, mode="text")
+            # 1. Fetch flight data as raw text with error handling
+            try:
+                web_data = gl.nondet.web.render(flight_radar_url, mode="text")
+                if not web_data or len(str(web_data).strip()) < 20:
+                    return {"is_valid_claim": False, "reason": "Could not fetch flight data — insufficient content returned"}
+            except Exception as e:
+                return {"is_valid_claim": False, "reason": f"Web render failed: {str(e)}"}
             
             # 2. Define the prompt for the AI Insurance Adjuster
             prompt = f"""
@@ -96,10 +101,11 @@ class GenClaim(gl.Contract):
                 return False
 
         # Execute the leader/validator consensus process
-        result = gl.vm.run_nondet_unsafe(leader_fn, validator_fn)
+        result = gl.vm.run_nondet(leader_fn, validator_fn)
         
         # Process the result outside the non-deterministic environment (deterministic updates)
-        is_valid = result.get("is_valid_claim", False)
+        result_data = result.calldata if hasattr(result, 'calldata') else result
+        is_valid = result_data.get("is_valid_claim", False)
         
         if is_valid:
             self.claim_status[flight_id] = "APPROVED"
