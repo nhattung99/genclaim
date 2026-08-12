@@ -235,45 +235,74 @@ function App() {
   };
 
   const fetchPolicyDetails = async (flightId) => {
-    const fId = flightId || queryFlightId;
-    if (!fId) return;
+    const fId = (flightId || queryFlightId || "").trim().toUpperCase();
+    
+    // Kiểm tra input trước
+    if (!fId) {
+      setStatusMessage("Please enter a Flight ID to query.");
+      return;
+    }
 
     setQueryLoading(true);
+    setQueryResult(null);
+
     try {
+      // Query từng field riêng lẻ, catch từng cái
+      // Nếu flight chưa tồn tại, contract trả về 0/"" — không throw
       const premium = await readClient.readContract({
         address: CONTRACT_ADDRESS,
         functionName: "get_policy",
         args: [fId],
-      });
-
-      const balance = await readClient.readContract({
-        address: CONTRACT_ADDRESS,
-        functionName: "get_insured_user_balance",
-        args: [account || "0x0000000000000000000000000000000000000000"],
-      });
+      }).catch(() => 0);
 
       const status = await readClient.readContract({
         address: CONTRACT_ADDRESS,
         functionName: "get_claim_status",
         args: [fId],
-      });
+      }).catch(() => "");
 
       const holder = await readClient.readContract({
         address: CONTRACT_ADDRESS,
         functionName: "get_policy_holder",
         args: [fId],
-      });
+      }).catch(() => "0x0000000000000000000000000000000000000000");
+
+      // get_insured_user_balance chỉ query nếu có account
+      let balance = 0;
+      if (account) {
+        balance = await readClient.readContract({
+          address: CONTRACT_ADDRESS,
+          functionName: "get_insured_user_balance",
+          args: [account],
+        }).catch(() => 0);
+      }
+
+      // Kiểm tra flight có tồn tại không (premium = 0 = chưa mua)
+      if (!premium || Number(premium) === 0) {
+        setQueryResult({
+          flightId: fId,
+          premium: 0,
+          balance: 0,
+          status: "NOT_FOUND",
+          holder: "",
+          notFound: true,
+        });
+        return;
+      }
 
       setQueryResult({
         flightId: fId,
         premium: Number(premium),
         balance: Number(balance),
-        status: status || "NONE",
-        holder: holder,
+        status: status || "PENDING",
+        holder: String(holder),
+        notFound: false,
       });
-    } catch (error) {
-      console.error(error);
-      alert("Failed to retrieve policy details.");
+
+    } catch (err) {
+      console.error("fetchPolicyDetails error:", err);
+      // Hiện lỗi rõ ràng thay vì chỉ "Failed to retrieve"
+      setStatusMessage("Query failed: " + (err.message || "Unknown error. Check console for details."));
     } finally {
       setQueryLoading(false);
     }
@@ -460,28 +489,37 @@ function App() {
 
             {queryResult && (
               <div className="query-result animate-fade-in">
-                <div className="result-row">
-                  <span>Flight Code:</span>
-                  <strong>{queryResult.flightId}</strong>
-                </div>
-                <div className="result-row">
-                  <span>Premium Registered:</span>
-                  <strong>${(queryResult.premium / 100).toFixed(2)} USD</strong>
-                </div>
-                <div className="result-row">
-                  <span>Your Insured Deposit:</span>
-                  <strong>${(queryResult.balance / 100).toFixed(2)} USD</strong>
-                </div>
-                <div className="result-row">
-                  <span>Claim Status:</span>
-                  <span className={`badge badge-${queryResult.status.toLowerCase()}`}>
-                    {queryResult.status}
-                  </span>
-                </div>
-                <div className="result-row">
-                  <span>Policy Holder:</span>
-                  <code className="address-trunc">{queryResult.holder}</code>
-                </div>
+                {queryResult.notFound ? (
+                  <div style={{ textAlign: "center", padding: "20px", color: "var(--text-secondary)" }}>
+                    <p>No policy found for flight <strong style={{color:"#fff"}}>{queryResult.flightId}</strong>.</p>
+                    <p style={{ fontSize: "13px" }}>Buy a policy first using the form on the left.</p>
+                  </div>
+                ) : (
+                  <>
+                    <div className="result-row">
+                      <span>Flight Code:</span>
+                      <strong>{queryResult.flightId}</strong>
+                    </div>
+                    <div className="result-row">
+                      <span>Premium Registered:</span>
+                      <strong>${(queryResult.premium / 100).toFixed(2)} USD</strong>
+                    </div>
+                    <div className="result-row">
+                      <span>Your Insured Deposit:</span>
+                      <strong>${(queryResult.balance / 100).toFixed(2)} USD</strong>
+                    </div>
+                    <div className="result-row">
+                      <span>Claim Status:</span>
+                      <span className={`badge badge-${(queryResult.status || "none").toLowerCase()}`}>
+                        {queryResult.status || "PENDING"}
+                      </span>
+                    </div>
+                    <div className="result-row">
+                      <span>Policy Holder:</span>
+                      <code className="address-trunc">{queryResult.holder}</code>
+                    </div>
+                  </>
+                )}
               </div>
             )}
           </div>
