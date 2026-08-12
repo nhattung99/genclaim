@@ -1,14 +1,13 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { createClient } from "genlayer-js";
 import { studionet } from "genlayer-js/chains";
+import { TransactionStatus } from "genlayer-js/types";
 import "./App.css";
 
 const CONTRACT_ADDRESS = import.meta.env.VITE_GENCLAIM_CONTRACT_ADDRESS || "0x17f66D5426f3CeEcB664504d3dCbF773B528FDD7";
 
-// Create read-only client
-const readClient = createClient({
-  chain: studionet,
-});
+// Read client — không cần wallet, tạo 1 lần ở module level
+const readClient = createClient({ chain: studionet });
 
 function App() {
   const [account, setAccount] = useState("");
@@ -58,6 +57,18 @@ function App() {
     }
   }, []);
 
+  // Write client — tạo MỚI mỗi lần, TRONG component, SAU KHI có account và window.ethereum
+  const getWriteClient = useCallback(() => {
+    if (!account || !window.ethereum) {
+      throw new Error("Wallet not connected");
+    }
+    return createClient({
+      chain: studionet,
+      account: account,
+      provider: window.ethereum,
+    });
+  }, [account]);
+
   const connectWallet = async () => {
     if (!window.ethereum) {
       alert("Please install MetaMask.");
@@ -65,39 +76,35 @@ function App() {
     }
     setLoading(true);
     try {
+      // Bước 1: lấy accounts
       const accounts = await window.ethereum.request({
         method: "eth_requestAccounts",
       });
-      setAccount(accounts[0]);
+      const addr = accounts[0];
+      setAccount(addr);
 
-      // Dùng genlayer-js client để switch chain — không gọi wallet_switchEthereumChain thủ công
+      // Bước 2: tạo client TẠM với account và provider để switch chain
       const tempClient = createClient({
         chain: studionet,
-        account: accounts[0],
+        account: addr,
+        provider: window.ethereum,
       });
+      // Bước 3: switch MetaMask sang studionet (tự add network nếu chưa có)
       await tempClient.connect("studionet");
 
-      setStatusMessage("Wallet connected to GenLayer Studionet!");
-    } catch (error) {
-      console.error(error);
-      setStatusMessage("Failed to connect wallet: " + (error?.message || String(error)));
+      setStatusMessage("✅ Connected to GenLayer Studionet!");
+    } catch (err) {
+      console.error(err);
+      setStatusMessage("❌ Failed to connect: " + (err.message || String(err)));
     } finally {
       setLoading(false);
     }
   };
 
-  const getWriteClient = () => {
-    if (!account) return null;
-    return createClient({
-      chain: studionet,
-      account: account, // chỉ truyền account string, KHÔNG truyền provider
-    });
-  };
-
   const buyPolicy = async (e) => {
     e.preventDefault();
     if (!account) {
-      alert("Please connect your wallet first.");
+      alert("Connect wallet first.");
       return;
     }
     if (!buyFlightId || !buyPremium) {
@@ -106,41 +113,38 @@ function App() {
     }
 
     setLoading(true);
-    setStatusMessage("Preparing transaction to buy policy...");
+    setStatusMessage("Waiting for MetaMask signature...");
     setTxHash("");
 
     try {
       const client = getWriteClient();
-      await client.connect("studionet");
-
-      const premiumValue = parseInt(buyPremium, 10);
       
-      // Send write transaction
       const hash = await client.writeContract({
         address: CONTRACT_ADDRESS,
         functionName: "buy_policy",
-        args: [buyFlightId, premiumValue],
+        args: [buyFlightId, parseInt(buyPremium, 10)],
       });
 
       setTxHash(hash);
-      setStatusMessage("Transaction submitted. Waiting for finalization (GenLayer Consensus)...");
+      setStatusMessage("Transaction submitted. Waiting for finalization...");
 
-      // Wait for transaction finality
       await client.waitForTransactionReceipt({
         hash,
-        status: "FINALIZED",
+        status: TransactionStatus.FINALIZED,
       });
 
-      setStatusMessage(`Policy successfully purchased for flight ${buyFlightId}!`);
+      setStatusMessage(`✅ Policy purchased for flight ${buyFlightId}!`);
       setBuyFlightId("");
       setBuyPremium("");
-      
-      // Auto-query the new policy status
       fetchPolicyDetails(buyFlightId);
-    } catch (error) {
-      console.error("buyPolicy Error:", error);
-      const msg = error?.shortMessage || error?.message || String(error);
-      setStatusMessage("Transaction failed: " + msg);
+    } catch (err) {
+      console.error(err);
+      const msg = err.shortMessage || err.message || String(err);
+      if (msg.includes("user rejected") || msg.includes("User rejected")) {
+        setStatusMessage("❌ Transaction rejected by user.");
+      } else {
+        setStatusMessage("❌ Error: " + msg);
+      }
     } finally {
       setLoading(false);
     }
@@ -149,7 +153,7 @@ function App() {
   const triggerClaim = async (e) => {
     e.preventDefault();
     if (!account) {
-      alert("Please connect your wallet first.");
+      alert("Connect wallet first.");
       return;
     }
     if (!triggerFlightId || !triggerUrl) {
@@ -162,9 +166,8 @@ function App() {
     setAiLogs([]);
     setTxHash("");
 
-    // Simulate AI log sequence to keep users engaged during consensus
-    const logs = [
-      "Connecting to GenLayer network validators...",
+    const logSteps = [
+      "Submitting transaction to GenLayer validators...",
       "Scraping flight telemetry records from Flightradar24 web render...",
       "Extracting status text data for flight " + triggerFlightId + "...",
       "Sending payload to non-deterministic AI Insurance Adjuster (LLM)...",
@@ -175,8 +178,8 @@ function App() {
 
     let currentLogIndex = 0;
     const logInterval = setInterval(() => {
-      if (currentLogIndex < logs.length) {
-        setAiLogs((prev) => [...prev, logs[currentLogIndex]]);
+      if (currentLogIndex < logSteps.length) {
+        setAiLogs((prev) => [...prev, logSteps[currentLogIndex]]);
         currentLogIndex++;
       } else {
         clearInterval(logInterval);
@@ -184,9 +187,8 @@ function App() {
     }, 3500);
 
     try {
-      setStatusMessage("Triggering AI Claim Adjudication...");
+      setStatusMessage("Waiting for MetaMask signature...");
       const client = getWriteClient();
-      await client.connect("studionet");
 
       const hash = await client.writeContract({
         address: CONTRACT_ADDRESS,
@@ -195,16 +197,15 @@ function App() {
       });
 
       setTxHash(hash);
+      setStatusMessage("Transaction submitted. Waiting for consensus finalization...");
 
-      // Wait for consensus finalization
-      const receipt = await client.waitForTransactionReceipt({
+      await client.waitForTransactionReceipt({
         hash,
-        status: "FINALIZED",
+        status: TransactionStatus.FINALIZED,
       });
 
       clearInterval(logInterval);
-      
-      // Fetch details immediately to see outcome
+
       const outcomeStatus = await readClient.readContract({
         address: CONTRACT_ADDRESS,
         functionName: "get_claim_status",
@@ -213,16 +214,20 @@ function App() {
 
       setAiLogs((prev) => [
         ...prev,
-        `Consensus Reached! Claim final status is: ${outcomeStatus}`
+        `✅ Consensus Reached! Claim final status is: ${outcomeStatus}`
       ]);
-      setStatusMessage(`Claim evaluation completed. Status: ${outcomeStatus}`);
+      setStatusMessage(`✅ Claim evaluation completed. Status: ${outcomeStatus}`);
       fetchPolicyDetails(triggerFlightId);
-    } catch (error) {
-      console.error("triggerClaim Error:", error);
+    } catch (err) {
+      console.error(err);
       clearInterval(logInterval);
-      const msg = error?.shortMessage || error?.message || String(error);
-      setStatusMessage("Consensus evaluation error: " + msg);
-      setAiLogs((prev) => [...prev, "Error: " + msg]);
+      const msg = err.shortMessage || err.message || String(err);
+      if (msg.includes("user rejected") || msg.includes("User rejected")) {
+        setStatusMessage("❌ Transaction rejected by user.");
+      } else {
+        setStatusMessage("❌ Consensus error: " + msg);
+      }
+      setAiLogs((prev) => [...prev, "❌ Error: " + msg]);
     } finally {
       setLoading(false);
       setIsAiRunning(false);
@@ -278,7 +283,7 @@ function App() {
   const fundContract = async (e) => {
     e.preventDefault();
     if (!account) {
-      alert("Please connect your wallet first.");
+      alert("Connect wallet first.");
       return;
     }
     if (!depositAmount) {
@@ -290,7 +295,6 @@ function App() {
     try {
       const valueToSend = BigInt(depositAmount);
       
-      // Send value directly to contract ghost wallet
       const tx = await window.ethereum.request({
         method: "eth_sendTransaction",
         params: [
@@ -307,7 +311,11 @@ function App() {
     } catch (error) {
       console.error(error);
       const msg = error?.shortMessage || error?.message || String(error);
-      setStatusMessage("Transaction failed: " + msg);
+      if (msg.includes("user rejected") || msg.includes("User rejected")) {
+        setStatusMessage("❌ Transaction rejected by user.");
+      } else {
+        setStatusMessage("❌ Transaction failed: " + msg);
+      }
     } finally {
       setLoading(false);
     }
