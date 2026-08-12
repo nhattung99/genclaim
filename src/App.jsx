@@ -6,7 +6,7 @@ import "./App.css";
 
 const CONTRACT_ADDRESS = import.meta.env.VITE_GENCLAIM_CONTRACT_ADDRESS || "0x17f66D5426f3CeEcB664504d3dCbF773B528FDD7";
 
-// Read client — không cần wallet, tạo 1 lần ở module level
+// Read client — module level
 const readClient = createClient({ chain: studionet });
 
 function App() {
@@ -21,7 +21,6 @@ function App() {
 
   // Trigger Claim states
   const [triggerFlightId, setTriggerFlightId] = useState("");
-  const [triggerUrl, setTriggerUrl] = useState("https://www.flightradar24.com/data/flights/vn123");
 
   // Query states
   const [queryFlightId, setQueryFlightId] = useState("");
@@ -57,7 +56,7 @@ function App() {
     }
   }, []);
 
-  // Write client — tạo MỚI mỗi lần, TRONG component, SAU KHI có account và window.ethereum
+  // Write client — created on demand with account & provider
   const getWriteClient = useCallback(() => {
     if (!account || !window.ethereum) {
       throw new Error("Wallet not connected");
@@ -76,20 +75,17 @@ function App() {
     }
     setLoading(true);
     try {
-      // Bước 1: lấy accounts
       const accounts = await window.ethereum.request({
         method: "eth_requestAccounts",
       });
       const addr = accounts[0];
       setAccount(addr);
 
-      // Bước 2: tạo client TẠM với account và provider để switch chain
       const tempClient = createClient({
         chain: studionet,
         account: addr,
         provider: window.ethereum,
       });
-      // Bước 3: switch MetaMask sang studionet (tự add network nếu chưa có)
       await tempClient.connect("studionet");
 
       setStatusMessage("✅ Connected to GenLayer Studionet!");
@@ -113,16 +109,19 @@ function App() {
     }
 
     setLoading(true);
-    setStatusMessage("Waiting for MetaMask signature...");
+    setStatusMessage("Waiting for MetaMask signature (payable premium transfer)...");
     setTxHash("");
 
     try {
       const client = getWriteClient();
+      const premiumValue = parseInt(buyPremium, 10);
       
+      // Send payable write transaction backed by native GEN value
       const hash = await client.writeContract({
         address: CONTRACT_ADDRESS,
         functionName: "buy_policy",
-        args: [buyFlightId, parseInt(buyPremium, 10)],
+        args: [buyFlightId, premiumValue],
+        value: BigInt(premiumValue),
       });
 
       setTxHash(hash);
@@ -133,7 +132,7 @@ function App() {
         status: TransactionStatus.FINALIZED,
       });
 
-      setStatusMessage(`✅ Policy purchased for flight ${buyFlightId}!`);
+      setStatusMessage(`✅ Immutable policy purchased and bound to holder for flight ${buyFlightId}!`);
       setBuyFlightId("");
       setBuyPremium("");
       fetchPolicyDetails(buyFlightId);
@@ -156,8 +155,8 @@ function App() {
       alert("Connect wallet first.");
       return;
     }
-    if (!triggerFlightId || !triggerUrl) {
-      alert("Please enter Flight ID and Flightradar URL.");
+    if (!triggerFlightId) {
+      alert("Please enter Flight ID.");
       return;
     }
 
@@ -166,14 +165,16 @@ function App() {
     setAiLogs([]);
     setTxHash("");
 
+    const authoritativeUrl = `https://www.flightradar24.com/data/flights/${triggerFlightId.toLowerCase().trim()}`;
+
     const logSteps = [
       "Submitting transaction to GenLayer validators...",
-      "Scraping flight telemetry records from Flightradar24 web render...",
-      "Extracting status text data for flight " + triggerFlightId + "...",
+      `Contract retrieving authoritative evidence URL internally (${authoritativeUrl})...`,
+      "Scraping flight telemetry records from authoritative Flightradar24 source...",
       "Sending payload to non-deterministic AI Insurance Adjuster (LLM)...",
       "AI Adjuster analyzing flight history (checking delay > 2 hours or cancellation)...",
       "Reaching network consensus (Equivalence checking across multiple validators)...",
-      "Executing state updates and processing payout transfers..."
+      "Executing state updates and processing 5x payout transfer to bound policy holder..."
     ];
 
     let currentLogIndex = 0;
@@ -190,10 +191,11 @@ function App() {
       setStatusMessage("Waiting for MetaMask signature...");
       const client = getWriteClient();
 
+      // Trigger claim bound strictly to flight ID (authoritative evidence URL resolved internally by contract)
       const hash = await client.writeContract({
         address: CONTRACT_ADDRESS,
         functionName: "trigger_claim",
-        args: [triggerFlightId, triggerUrl],
+        args: [triggerFlightId],
       });
 
       setTxHash(hash);
@@ -237,7 +239,6 @@ function App() {
   const fetchPolicyDetails = async (flightId) => {
     const fId = (flightId || queryFlightId || "").trim().toUpperCase();
     
-    // Kiểm tra input trước
     if (!fId) {
       setStatusMessage("Please enter a Flight ID to query.");
       return;
@@ -247,8 +248,6 @@ function App() {
     setQueryResult(null);
 
     try {
-      // Query từng field riêng lẻ, catch từng cái
-      // Nếu flight chưa tồn tại, contract trả về 0/"" — không throw
       const premium = await readClient.readContract({
         address: CONTRACT_ADDRESS,
         functionName: "get_policy",
@@ -267,7 +266,6 @@ function App() {
         args: [fId],
       }).catch(() => "0x0000000000000000000000000000000000000000");
 
-      // get_insured_user_balance chỉ query nếu có account
       let balance = 0;
       if (account) {
         balance = await readClient.readContract({
@@ -277,7 +275,6 @@ function App() {
         }).catch(() => 0);
       }
 
-      // Kiểm tra flight có tồn tại không (premium = 0 = chưa mua)
       if (!premium || Number(premium) === 0) {
         setQueryResult({
           flightId: fId,
@@ -301,14 +298,12 @@ function App() {
 
     } catch (err) {
       console.error("fetchPolicyDetails error:", err);
-      // Hiện lỗi rõ ràng thay vì chỉ "Failed to retrieve"
       setStatusMessage("Query failed: " + (err.message || "Unknown error. Check console for details."));
     } finally {
       setQueryLoading(false);
     }
   };
 
-  // Fund Contract via Deposit
   const fundContract = async (e) => {
     e.preventDefault();
     if (!account) {
@@ -377,7 +372,7 @@ function App() {
       <header className="hero-section">
         <h1>AI-Driven Parametric Travel Insurance</h1>
         <p className="hero-desc">
-          Automated delay and cancellation protection using GenLayer Intelligent Contracts. Fetch flight data and judge claims using decentralised LLM consensus.
+          Automated delay and cancellation protection using GenLayer Intelligent Contracts. Backed by payable, immutable holder-bound policies and authoritative evidence AI adjudication.
         </p>
         <div className="contract-info">
           <span>Active Contract Address:</span>
@@ -392,7 +387,7 @@ function App() {
           {/* Card 1: Buy Policy */}
           <div className="card glass-card">
             <h2 className="card-title">1. Buy Travel Insurance</h2>
-            <p className="card-subtitle">Purchase dynamic coverage for any flight.</p>
+            <p className="card-subtitle">Payable, immutable policy bound strictly to your wallet address.</p>
             <form onSubmit={buyPolicy} className="form-group">
               <label>Flight Code (e.g. VN123)</label>
               <input
@@ -402,7 +397,7 @@ function App() {
                 onChange={(e) => setBuyFlightId(e.target.value.toUpperCase())}
                 required
               />
-              <label>Premium Amount (in Cents, e.g. 1000 = $10.00)</label>
+              <label>Backed Premium Deposit (in Wei, e.g. 1000)</label>
               <input
                 type="number"
                 placeholder="1000"
@@ -411,7 +406,7 @@ function App() {
                 required
               />
               <button type="submit" className="action-btn purple-glow" disabled={loading}>
-                Buy Policy
+                Buy Policy (Payable)
               </button>
             </form>
           </div>
@@ -419,7 +414,7 @@ function App() {
           {/* Card 2: Trigger Claim */}
           <div className="card glass-card">
             <h2 className="card-title">2. Trigger Parametric Claim</h2>
-            <p className="card-subtitle">Scrapes flight status and adjudicates claim via AI validators.</p>
+            <p className="card-subtitle">Fetches authoritative Flightradar evidence bound internally to flight ID.</p>
             <form onSubmit={triggerClaim} className="form-group">
               <label>Flight Code</label>
               <input
@@ -429,14 +424,10 @@ function App() {
                 onChange={(e) => setTriggerFlightId(e.target.value.toUpperCase())}
                 required
               />
-              <label>Flightradar24 URL or Mock flight page URL</label>
-              <input
-                type="url"
-                value={triggerUrl}
-                onChange={(e) => setTriggerUrl(e.target.value)}
-                required
-              />
-              <button type="submit" className="action-btn cyan-glow" disabled={loading}>
+              <div style={{ fontSize: "12px", color: "var(--text-secondary)", marginTop: "4px" }}>
+                Authoritative Source: <code style={{ color: "var(--accent-cyan)" }}>https://www.flightradar24.com/data/flights/{triggerFlightId ? triggerFlightId.toLowerCase() : "flight_id"}</code>
+              </div>
+              <button type="submit" className="action-btn cyan-glow" disabled={loading} style={{ marginTop: "16px" }}>
                 Evaluate Claim via AI
               </button>
             </form>
@@ -501,12 +492,12 @@ function App() {
                       <strong>{queryResult.flightId}</strong>
                     </div>
                     <div className="result-row">
-                      <span>Premium Registered:</span>
-                      <strong>${(queryResult.premium / 100).toFixed(2)} USD</strong>
+                      <span>Backed Premium Deposit:</span>
+                      <strong>{queryResult.premium} units (Wei)</strong>
                     </div>
                     <div className="result-row">
-                      <span>Your Insured Deposit:</span>
-                      <strong>${(queryResult.balance / 100).toFixed(2)} USD</strong>
+                      <span>Your Total Insured Balance:</span>
+                      <strong>{queryResult.balance} units (Wei)</strong>
                     </div>
                     <div className="result-row">
                       <span>Claim Status:</span>

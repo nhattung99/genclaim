@@ -9,52 +9,68 @@ class GenClaim(gl.Contract):
     claim_status: TreeMap[str, str]
     policy_holders: TreeMap[str, Address]
 
-    @gl.public.write
+    @gl.public.write.payable
     def buy_policy(self, flight_id: str, premium_amount: int) -> bool:
-        # Validate parameters
-        if premium_amount <= 0:
+        # 1. Require payable: policy must be backed by actual native value sent (gl.message.value)
+        paid_val = gl.message.value
+        if paid_val == u256(0) or premium_amount <= 0:
             return False
-        
-        # Track sender's address
+            
+        # Ensure paid value covers specified premium
+        if int(paid_val) < premium_amount:
+            return False
+
+        # 2. Immutable policy: cannot overwrite an existing flight policy
+        existing_premium = self.policies.get(flight_id, u256(0))
+        if existing_premium > u256(0):
+            return False
+
+        # 3. Holder-bound policy: bind sender address immutably to flight ID
         user_address = gl.message.sender_address
-        
-        # Register flight policies and user premium/coverage deposits using u256
-        self.policies[flight_id] = u256(premium_amount)
-        self.insured_users[user_address] = u256(premium_amount)
+        self.policies[flight_id] = paid_val
+        self.insured_users[user_address] = self.insured_users.get(user_address, u256(0)) + paid_val
         self.policy_holders[flight_id] = user_address
         self.claim_status[flight_id] = "PENDING"
         
         return True
 
     @gl.public.write
-    def trigger_claim(self, flight_id: str, flight_radar_url: str) -> bool:
-        # Check if the policy exists for this flight_id
+    def trigger_claim(self, flight_id: str) -> bool:
+        # Check if policy exists and is holder-bound
         premium_u256 = self.policies.get(flight_id, u256(0))
         premium = int(premium_u256)
         if premium <= 0:
             return False
-            
-        # Check if the claim has already been processed/decided
+
+        holder = self.policy_holders.get(flight_id, Address("0x0000000000000000000000000000000000000000"))
+        if holder == Address("0x0000000000000000000000000000000000000000"):
+            return False
+
+        # Check if the claim has already been decided
         status = self.claim_status.get(flight_id, "PENDING")
         if status != "PENDING":
             return False
 
+        # Construct authoritative evidence URL internally bound to flight ID (cannot be overridden by caller)
+        clean_flight = flight_id.strip().lower()
+        authoritative_url = f"https://www.flightradar24.com/data/flights/{clean_flight}"
+
         # Define non-deterministic leader function
         def leader_fn():
-            # 1. Fetch flight data as raw text with error handling
+            # Fetch authoritative flight data text with error handling
             try:
-                web_data = gl.nondet.web.render(flight_radar_url, mode="text")
+                web_data = gl.nondet.web.render(authoritative_url, mode="text")
                 if not web_data or len(str(web_data).strip()) < 20:
-                    return {"is_valid_claim": False, "reason": "Could not fetch flight data — insufficient content returned"}
+                    return {"is_valid_claim": False, "reason": "Could not fetch authoritative flight data — insufficient content returned"}
             except Exception as e:
-                return {"is_valid_claim": False, "reason": f"Web render failed: {str(e)}"}
+                return {"is_valid_claim": False, "reason": f"Authoritative web render failed: {str(e)}"}
             
-            # 2. Define the prompt for the AI Insurance Adjuster
+            # Define the prompt for the AI Insurance Adjuster
             prompt = f"""
-            You are an AI Insurance Adjuster analyzing flight status data.
-            Determine if the flight '{flight_id}' was delayed by more than 2 hours or if it was cancelled.
+            You are an AI Insurance Adjuster analyzing authoritative flight status data for flight '{flight_id}'.
+            Determine if flight '{flight_id}' was delayed by more than 2 hours or cancelled.
             
-            Flight Status Web Data:
+            Authoritative Flight Status Web Data ({authoritative_url}):
             {web_data}
             
             Based on this information, judge whether the travel insurance claim is valid (i.e. delayed > 2 hours or cancelled).
@@ -66,17 +82,15 @@ class GenClaim(gl.Contract):
             Respond ONLY with the JSON object. Do not include any other markdown, text, or explanations.
             """
             
-            # 3. Call the LLM to get structured JSON output
+            # Call the LLM to get structured JSON output
             ai_response = gl.nondet.exec_prompt(prompt, response_format="json")
             return ai_response
 
         # Define validator function to establish consensus
         def validator_fn(leader_result) -> bool:
-            # Check if leader succeeded
             if not isinstance(leader_result, gl.vm.Return):
                 return False
             
-            # Extract leader's data
             leader_data = leader_result.calldata
             if not isinstance(leader_data, dict):
                 return False
@@ -90,12 +104,10 @@ class GenClaim(gl.Contract):
             if not isinstance(leader_data["reason"], str):
                 return False
                 
-            # Run our own leader_fn and check if the outcome matches
             try:
                 my_result = leader_fn()
                 if not isinstance(my_result, dict):
                     return False
-                # Validators must agree on the core decision to reach consensus
                 return my_result.get("is_valid_claim") == leader_data["is_valid_claim"]
             except Exception:
                 return False
@@ -103,20 +115,17 @@ class GenClaim(gl.Contract):
         # Execute the leader/validator consensus process
         result = gl.vm.run_nondet(leader_fn, validator_fn)
         
-        # Process the result outside the non-deterministic environment (deterministic updates)
+        # Process the result outside the non-deterministic environment
         result_data = result.calldata if hasattr(result, 'calldata') else result
         is_valid = result_data.get("is_valid_claim", False)
         
         if is_valid:
             self.claim_status[flight_id] = "APPROVED"
             
-            # Retrieve policy holder address
-            holder = self.policy_holders.get(flight_id, Address("0x0000000000000000000000000000000000000000"))
-            if holder != Address("0x0000000000000000000000000000000000000000"):
-                # Payout: 5x the premium as the parametric insurance payout coverage
-                payout_amount = premium * 5
-                recipient = gl.get_contract_at(holder)
-                recipient.emit_transfer(value=u256(payout_amount), on='finalized')
+            # Payout: 5x the backed premium to the bound policy holder
+            payout_amount = premium * 5
+            recipient = gl.get_contract_at(holder)
+            recipient.emit_transfer(value=u256(payout_amount), on='finalized')
         else:
             self.claim_status[flight_id] = "REJECTED"
             

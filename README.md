@@ -4,7 +4,7 @@
 [![Live Demo](https://img.shields.io/badge/Vercel-genclaim.vercel.app-blue.svg)](https://genclaim.vercel.app)
 [![GenLayer SDK](https://img.shields.io/badge/GenLayer-v0.2.16-purple.svg)](https://genlayer.com)
 
-**GenClaim** is a decentralized parametric travel insurance platform built as a **GenLayer Intelligent Contract**. It automates flight delay and cancellation insurance coverage by fetching real-time internet flight telemetry data (e.g., Flightradar24) and using decentralized LLM consensus to judge claims autonomously and trigger instant payouts.
+**GenClaim** is a decentralized parametric travel insurance platform built as a **GenLayer Intelligent Contract**. It automates flight delay and cancellation insurance coverage by fetching real-time internet flight telemetry data (Flightradar24) and using decentralized LLM consensus to judge claims autonomously and trigger instant payouts.
 
 ---
 
@@ -22,29 +22,44 @@
 
 ---
 
-## 🧠 How the Intelligent Contract Works
+## 🛡️ Security Architecture & Anti-Fraud Features
 
-GenClaim combines blockchain state immutability with non-deterministic web scraping and Large Language Model (LLM) reasoning through GenLayer's **Equivalence Principle**.
+Following GenLayer security guidelines, GenClaim implements key protection mechanisms:
+
+1. **Payable & Backed Premiums (`@gl.public.write.payable`)**:
+   - `buy_policy` is strictly `payable` and requires `gl.message.value > 0`. Anyone attempting to register an unbacked policy without sending native tokens will be rejected.
+2. **Immutable & Holder-Bound Policies**:
+   - Policy records cannot be overwritten (`policies[flight_id] > 0` check).
+   - Each policy is permanently bound to `gl.message.sender_address` upon registration.
+3. **Authoritative Evidence Source (Anti-Spoofing)**:
+   - `trigger_claim(flight_id: str)` no longer accepts unauthenticated caller-supplied URLs.
+   - The contract deterministically constructs the official Flightradar URL (`https://www.flightradar24.com/data/flights/{clean_flight}`) inside `leader_fn`, preventing fake HTML injection.
+4. **Guaranteed Payout Settlement**:
+   - Payouts (5x backed premium) are dispatched directly to the bound policy holder address via `emit_transfer()`.
+
+---
+
+## 🧠 How the Intelligent Contract Works
 
 ```
                        +-----------------------------------+
-                       |    User Buys Policy (buy_policy)  |
+                       | Buy Policy (buy_policy - Payable) |
                        +-----------------------------------+
                                          |
-                                         v
+                                         v (Bound Holder & Premium)
                        +-----------------------------------+
-                       | User Triggers Claim (trigger_claim)|
+                       |   Trigger Claim (trigger_claim)   |
                        +-----------------------------------+
                                          |
-                                         v
+                                         v (Authoritative URL constructed internally)
               +-------------------------------------------------+
-              |  gl.vm.run_nondet_unsafe(leader_fn, validator_fn)|
+              |    gl.vm.run_nondet(leader_fn, validator_fn)    |
               +-------------------------------------------------+
                  /                                           \
                 /                                             \
   +--------------------------+                   +--------------------------+
   |       Leader Node        |                   |      Validator Nodes     |
-  |  1. gl.nondet.web.render |                   |  1. Execute leader_fn()  |
+  |  1. Render Flightradar   |                   |  1. Execute leader_fn()  |
   |  2. gl.nondet.exec_prompt|                   |  2. Verify JSON output   |
   |  3. Return JSON Result   |                   |  3. Validate consensus   |
   +--------------------------+                   +--------------------------+
@@ -60,138 +75,34 @@ GenClaim combines blockchain state immutability with non-deterministic web scrap
         [Claim Valid: True]                           [Claim Valid: False]
   - Update status to APPROVED                   - Update status to REJECTED
   - Trigger 5x payout via emit_transfer()
+    to bound policy holder
 ```
-
-### 1. Persistent Storage Design
-State variables are persisted on-chain using GenLayer's fixed-size `TreeMap` structures and `u256` integers to guarantee deterministic execution across nodes:
-- `policies: TreeMap[str, u256]`: Maps Flight ID / Flight Code to the premium amount registered.
-- `insured_users: TreeMap[Address, u256]`: Tracks user premium deposits and coverage amounts.
-- `claim_status: TreeMap[str, str]`: Tracks the claim lifecycle (`"PENDING"`, `"APPROVED"`, `"REJECTED"`).
-- `policy_holders: TreeMap[str, Address]`: Links a flight policy code to the purchasing user's wallet address.
-
-### 2. Non-Deterministic Consensus (`run_nondet_unsafe`)
-When a policy holder triggers a claim evaluation, the contract executes non-deterministic steps safely inside `gl.vm.run_nondet_unsafe`:
-- **Leader Execution (`leader_fn`)**:
-  1. Calls `gl.nondet.web.render(flight_radar_url, mode="text")` to render and extract flight status text.
-  2. Passes the raw text into `gl.nondet.exec_prompt(prompt, response_format="json")` acting as an AI Insurance Adjuster to evaluate if the flight was delayed > 2 hours or cancelled.
-  3. Returns a strict JSON payload: `{"is_valid_claim": bool, "reason": str}`.
-- **Validator Execution (`validator_fn`)**:
-  - Re-executes or validates the leader's evaluation independently to verify structural validity and reach agreement on the claim decision.
-
-### 3. Automatic Payout Execution
-If the consensus evaluates `is_valid_claim == True`:
-- The claim status is updated to `"APPROVED"`.
-- The contract calculates a parametric coverage payout (5x the premium amount).
-- An asynchronous value transfer is dispatched to the policy holder using `recipient.emit_transfer(value=u256(payout_amount), on='finalized')`.
 
 ---
 
 ## 📜 Smart Contract Specification (`genclaim_contract.py`)
 
-### Main Class Definition
-The contract class is named **`GenClaim`** (extending `gl.Contract`) to prevent naming collisions with GenLayer's linter and CLI reflection tools:
-
-```python
-class GenClaim(gl.Contract):
-    policies: TreeMap[str, u256]
-    insured_users: TreeMap[Address, u256]
-    claim_status: TreeMap[str, str]
-    policy_holders: TreeMap[str, Address]
-```
-
 ### Public Method Specifications
 
 | Method Name | Visibility | Input Parameters | Return Type | Description |
 | :--- | :--- | :--- | :--- | :--- |
-| `buy_policy` | `@gl.public.write` | `flight_id: str`, `premium_amount: int` | `bool` | Registers insurance coverage for a flight and records the sender's address. |
-| `trigger_claim` | `@gl.public.write` | `flight_id: str`, `flight_radar_url: str` | `bool` | Fetches flight data, runs AI LLM adjudication consensus, updates status, and dispatches payout if valid. |
-| `get_policy` | `@gl.public.view` | `flight_id: str` | `int` | Returns the registered premium amount for a flight. |
-| `get_insured_user_balance` | `@gl.public.view` | `user: Address` | `int` | Returns the insured user's registered deposit balance. |
-| `get_claim_status` | `@gl.public.view` | `flight_id: str` | `str` | Returns the status string (`"PENDING"`, `"APPROVED"`, `"REJECTED"`). |
-| `get_policy_holder` | `@gl.public.view` | `flight_id: str` | `Address` | Returns the policy holder's wallet address. |
+| `buy_policy` | `@gl.public.write.payable` | `flight_id: str`, `premium_amount: int` | `bool` | Registers backed insurance coverage for a flight and binds sender address immutably. |
+| `trigger_claim` | `@gl.public.write` | `flight_id: str` | `bool` | Fetches authoritative flight data, runs AI adjudication consensus, updates status, and dispatches payout to policy holder. |
+| `get_policy` | `@gl.public.view` | `flight_id: str` | `int` | Returns the registered backed premium amount for a flight. |
+| `get_insured_user_balance` | `@gl.public.view` | `user: Address` | `int` | Returns total backed premium balance deposited by user address. |
+| `get_claim_status` | `@gl.public.view` | `flight_id: str` | `str` | Returns the claim lifecycle status (`"PENDING"`, `"APPROVED"`, `"REJECTED"`). |
+| `get_policy_holder` | `@gl.public.view` | `flight_id: str` | `Address` | Returns the policy holder address bound to a flight. |
 
 ---
 
 ## 🛠️ Project Setup & Installation
 
-### Prerequisites
-- **Node.js** (v18 or higher)
-- **npm** (v9 or higher)
-- **MetaMask** or any Web3 Browser Wallet connected to GenLayer Studionet
-
-### 1. Clone the Repository
 ```bash
 git clone https://github.com/nhattung99/genclaim.git
 cd genclaim
-```
-
-### 2. Install Dependencies
-```bash
 npm install
-```
-
-### 3. Environment Configuration
-Create a `.env` file in the root directory (or copy `.env.example`):
-```env
-VITE_GENCLAIM_CONTRACT_ADDRESS=0x17f66D5426f3CeEcB664504d3dCbF773B528FDD7
-```
-
----
-
-## 🚀 Smart Contract Deployment Instructions
-
-### Deploying via GenLayer Studio (Recommended)
-
-1. Open [GenLayer Studio (Run & Debug)](https://studio.genlayer.com/run-debug).
-2. Click **Reset Storage** and perform a hard refresh (`Ctrl + Shift + R`) to clear browser compiler caches.
-3. Open `genclaim_contract.py` in the Studio editor.
-4. Click **Deploy**.
-5. Once deployed, note down the generated contract address (e.g., `0x17f66D5426f3CeEcB664504d3dCbF773B528FDD7`).
-
-### Deploying via GenLayer CLI (Localnet)
-
-1. Initialize localnet:
-   ```bash
-   genlayer init
-   genlayer up
-   ```
-2. Deploy `genclaim_contract.py`:
-   ```bash
-   genlayer deploy genclaim_contract.py
-   ```
-
----
-
-## 💻 Running the Frontend Application
-
-### Local Development Server
-To start the React development server locally:
-```bash
 npm run dev
 ```
-Open `http://localhost:5173` in your browser.
-
-### Building for Production
-```bash
-npm run build
-```
-
-### Deploying to Vercel
-```bash
-npx vercel --prod
-```
-
----
-
-## 🔐 Security & Linter Compliance (GenLayer v0.2.16)
-
-The project strictly follows GenLayer Intelligent Contract development constraints:
-1. **Magic Header**: Top lines explicitly state the dependency hash:
-   `# { "Depends": "py-genlayer:1jb45aa8ynh2a9c9xn3b7qqh8sm5q93hwfp7jqmwsfhh8jpz09h6" }`
-2. **Unique Class Name**: Uses `class GenClaim(gl.Contract):` instead of generic `Contract` to avoid CLI reflection conflicts.
-3. **No Direct `TreeMap` Reassignment**: Leaves `TreeMap` declarations unassigned in `__init__`.
-4. **Deterministic Storage Types**: Uses fixed-size `u256` for storage representation.
-5. **Safe Non-Determinism**: Wraps all web and LLM calls inside `gl.vm.run_nondet_unsafe`.
 
 ---
 
