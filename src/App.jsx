@@ -60,7 +60,7 @@ function App() {
 
   const connectWallet = async () => {
     if (!window.ethereum) {
-      alert("Please install MetaMask or another Web3 browser wallet.");
+      alert("Please install MetaMask.");
       return;
     }
     setLoading(true);
@@ -70,41 +70,27 @@ function App() {
       });
       setAccount(accounts[0]);
 
-      // Switch sang studionet (chainId 61999 = 0xF21F)
-      try {
-        await window.ethereum.request({
-          method: 'wallet_switchEthereumChain',
-          params: [{ chainId: '0xF21F' }],
-        });
-      } catch (switchError) {
-        if (switchError.code === 4902) {
-          await window.ethereum.request({
-            method: 'wallet_addEthereumChain',
-            params: [{
-              chainId: '0xF21F',
-              chainName: 'GenLayer Studionet',
-              rpcUrls: ['https://studio.genlayer.com/api'],
-              nativeCurrency: { name: 'GEN', symbol: 'GEN', decimals: 18 },
-            }],
-          });
-        }
-      }
+      // Dùng genlayer-js client để switch chain — không gọi wallet_switchEthereumChain thủ công
+      const tempClient = createClient({
+        chain: studionet,
+        account: accounts[0],
+      });
+      await tempClient.connect("studionet");
 
-      setStatusMessage("Wallet connected successfully!");
+      setStatusMessage("Wallet connected to GenLayer Studionet!");
     } catch (error) {
       console.error(error);
-      setStatusMessage("Failed to connect wallet.");
+      setStatusMessage("Failed to connect wallet: " + (error?.message || String(error)));
     } finally {
       setLoading(false);
     }
   };
 
   const getWriteClient = () => {
-    if (!account || !window.ethereum) return null;
+    if (!account) return null;
     return createClient({
       chain: studionet,
-      account: account,
-      provider: window.ethereum,
+      account: account, // chỉ truyền account string, KHÔNG truyền provider
     });
   };
 
@@ -124,11 +110,8 @@ function App() {
     setTxHash("");
 
     try {
-      try {
-        await client.connect("studionet");
-      } catch (connErr) {
-        console.warn("Snap connect bypassed:", connErr);
-      }
+      const client = getWriteClient();
+      await client.connect("studionet");
 
       const premiumValue = parseInt(buyPremium, 10);
       
@@ -202,11 +185,8 @@ function App() {
 
     try {
       setStatusMessage("Triggering AI Claim Adjudication...");
-      try {
-        await client.connect("studionet");
-      } catch (connErr) {
-        console.warn("Snap connect bypassed:", connErr);
-      }
+      const client = getWriteClient();
+      await client.connect("studionet");
 
       const hash = await client.writeContract({
         address: CONTRACT_ADDRESS,
@@ -326,7 +306,8 @@ function App() {
       setStatusMessage("Fund transfer submitted! Wait for finalization...");
     } catch (error) {
       console.error(error);
-      setStatusMessage("Funding transaction failed.");
+      const msg = error?.shortMessage || error?.message || String(error);
+      setStatusMessage("Transaction failed: " + msg);
     } finally {
       setLoading(false);
     }
@@ -523,14 +504,14 @@ function App() {
           <p>{statusMessage}</p>
           {txHash && (
             <div className="tx-link">
-              <span>View on Explorer:</span>
+              <span>View on Explorer: </span>
               <a
                 href={`https://explorer-studio.genlayer.com/tx/${txHash}`}
                 target="_blank"
                 rel="noopener noreferrer"
                 style={{ color: 'var(--accent-cyan)', wordBreak: 'break-all' }}
               >
-                {txHash.substring(0, 16)}...{txHash.substring(txHash.length - 8)}
+                {txHash.slice(0, 16)}...{txHash.slice(-8)}
               </a>
             </div>
           )}
