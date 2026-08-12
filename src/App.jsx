@@ -152,8 +152,9 @@ function App() {
       // Auto-query the new policy status
       fetchPolicyDetails(buyFlightId);
     } catch (error) {
-      console.error(error);
-      setStatusMessage("Transaction failed or rejected.");
+      console.error("buyPolicy Error:", error);
+      const msg = error?.shortMessage || error?.message || String(error);
+      setStatusMessage("Transaction failed: " + msg);
     } finally {
       setLoading(false);
     }
@@ -231,10 +232,11 @@ function App() {
       setStatusMessage(`Claim evaluation completed. Status: ${outcomeStatus}`);
       fetchPolicyDetails(triggerFlightId);
     } catch (error) {
-      console.error(error);
+      console.error("triggerClaim Error:", error);
       clearInterval(logInterval);
-      setStatusMessage("Consensus evaluation failed or disagreed.");
-      setAiLogs((prev) => [...prev, "Error: Consensus rejected the evaluation request."]);
+      const msg = error?.shortMessage || error?.message || String(error);
+      setStatusMessage("Consensus evaluation error: " + msg);
+      setAiLogs((prev) => [...prev, "Error: " + msg]);
     } finally {
       setLoading(false);
       setIsAiRunning(false);
